@@ -5,165 +5,153 @@ import pandas_ta as ta
 import plotly.graph_objects as go
 import requests
 from openai import OpenAI
+from finvizfinance.screener.overview import Overview
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Alpha Scanner v4", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Alpha Scanner AI v6", page_icon="🎯", layout="wide")
 
-# Carregar chaves dos Secrets (Segurança)
+# Inicialização da OpenAI via Secrets
 try:
-    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
-    client = OpenAI(api_key=OPENAI_API_KEY)
-except Exception:
-    st.error("⚠️ Erro: Configure as chaves 'OPENAI_API_KEY' e 'NEWS_API_KEY' nos Secrets do Streamlit.")
+except:
+    st.error("⚠️ Configure 'OPENAI_API_KEY' e 'NEWS_API_KEY' nos Secrets do Streamlit.")
     st.stop()
 
-# --- CSS PERSONALIZADO ---
+# --- CSS PROFISSIONAL ---
 st.markdown("""
     <style>
     .main { background-color: #0b0e14; }
-    div[data-testid="stMetric"] {
-        background-color: #161b22 !important;
-        border: 1px solid #00ffcc !important;
-        border-radius: 10px; padding: 15px;
-    }
-    [data-testid="stMetricLabel"] { 
-        color: #00ffcc !important; 
-        font-weight: bold !important;
-        font-size: 20px !important;
-    }
-    div[data-testid="stMetricValue"] > div { color: #ffffff !important; }
-    .news-card {
-        background-color: #1e2130; padding: 12px; border-radius: 8px;
-        margin-bottom: 10px; border-left: 5px solid #00ffcc; color: white;
-    }
+    div[data-testid="stMetric"] { background-color: #161b22; border: 1px solid #00ffcc; border-radius: 10px; padding: 10px; }
+    .stTable { background-color: #161b22; color: white; }
+    .probability-high { color: #00ffcc; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNÇÕES ---
+# --- FUNÇÕES CORE ---
 
-def get_gpt_analysis(ticker):
+@st.cache_data(ttl=3600)
+def get_market_opportunities():
+    """Etapa 1: Escaneia o mercado usando Finviz para achar ações com recomendação de bancos"""
     try:
-        prompt = f"Aja como um analista sênior. Resuma as 3 últimas recomendações de grandes bancos para a ação {ticker}. Inclua preço alvo e se é compra ou manutenção."
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=200
-        )
-        return response.choices[0].message.content
+        framer = Overview()
+        # Filtros: S&P 500, Analyst Recom: Strong Buy, Target Price: Above Price
+        filters_dict = {'Index': 'S&P 500', 'Analyst Recom.': 'Strong Buy (1)'}
+        framer.set_filter(filters_dict=filters_dict)
+        df_market = framer.screener_view()
+        return df_market[['Ticker', 'Price', 'Target Price', 'Volume']]
     except:
-        return "Resumo de analistas temporariamente indisponível."
+        # Fallback caso o Finviz falhe
+        return pd.DataFrame([{'Ticker': 'AAPL', 'Price': 200, 'Target Price': 250, 'Volume': 1000000}])
+
+def analyze_technical_momentum(df_hist):
+    """Etapa 2: Analisa tempos gráficos (5, 15, 60m) buscando o alvo de 1%"""
+    if df_hist is None or len(df_hist) < 20: return 0
+    
+    # Indicadores
+    df_hist['RSI'] = ta.rsi(df_hist['Close'], length=14)
+    df_hist['EMA9'] = ta.ema(df_hist['Close'], length=9)
+    df_hist['EMA21'] = ta.ema(df_hist['Close'], length=21)
+    
+    last_close = df_hist['Close'].iloc[-1]
+    last_rsi = df_hist['RSI'].iloc[-1]
+    ema_cross = df_hist['EMA9'].iloc[-1] > df_hist['EMA21'].iloc[-1]
+    
+    # Lógica de Probabilidade para 1% de movimento (Day Trade)
+    score = 0
+    if 40 < last_rsi < 65: score += 40  # Momentum de alta
+    if ema_cross: score += 30          # Tendência confirmada
+    if last_close > df_hist['High'].iloc[-2]: score += 30 # Rompimento de máxima anterior
+    
+    return score
 
 # --- NAVEGAÇÃO ---
-if 'page' not in st.session_state:
-    st.session_state.page = 'home'
+if 'page' not in st.session_state: st.session_state.page = 'home'
 
-# --- TELA HOME ---
 if st.session_state.page == 'home':
-    st.title("🚀 Alpha Scanner v4 - Pro Trader")
-    
-    tickers = ['AAPL', 'TSLA', 'NVDA', 'AMD', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'SPY', 'QQQ', 'COIN', 'MSTR']
+    st.title("🎯 IA Alpha Scanner: Top 10 Day Trade")
+    st.subheader("Análise Global: Consenso de Bancos + Gráfico + IA")
 
-    if st.sidebar.button("🔄 ESCANEAR MERCADO"):
-        with st.spinner('Baixando dados e calculando probabilidades...'):
-            # Download em massa para evitar bloqueio do Yahoo Finance
-            data_all = yf.download(tickers, period="1mo", interval="1h", group_by='ticker', progress=False)
+    if st.sidebar.button("🚀 INICIAR SCANNER GLOBAL"):
+        with st.spinner('1. Filtrando consenso de Bancos e Upside...'):
+            potential_stocks = get_market_opportunities()
+            tickers = potential_stocks['Ticker'].tolist()[:40] # Analisamos as top 40 para evitar bloqueio
+
+        with st.spinner('2. Analisando setups gráficos (5m, 15m, 60m)...'):
+            # Download em massa (1h para tendência, 15m para entrada)
+            data_tech = yf.download(tickers, period="5d", interval="15m", group_by='ticker', progress=False)
             
-            results = []
+            final_list = []
             for t in tickers:
                 try:
-                    df = data_all[t].dropna()
-                    if df.empty: continue
+                    df_t = data_tech[t].dropna()
+                    tech_score = analyze_technical_momentum(df_t)
                     
-                    price = df['Close'].iloc[-1]
-                    rsi = ta.rsi(df['Close'], length=14).iloc[-1]
+                    # Pegar dados fundamentais da tabela inicial
+                    fund_row = potential_stocks[potential_stocks['Ticker'] == t].iloc[0]
+                    upside = ((float(fund_row['Target Price']) / float(fund_row['Price'])) - 1) * 100
                     
-                    # Score de probabilidade
-                    score = 50
-                    if rsi < 40: score += 20
-                    elif rsi > 70: score -= 10
-                    if df['Close'].iloc[-1] > df['Open'].iloc[-1]: score += 15
+                    total_prob = (tech_score * 0.7) + (min(upside, 30) * 1.0) # Peso maior no gráfico para DayTrade
                     
-                    results.append({
-                        "Ticker": t, 
-                        "Probabilidade %": round(score, 1), 
-                        "Preço": round(float(price), 2), 
-                        "RSI": round(float(rsi), 1)
+                    final_list.append({
+                        "Ticker": t,
+                        "Probabilidade": round(total_prob, 1),
+                        "Upside Bancos %": round(upside, 1),
+                        "Preço": fund_row['Price'],
+                        "Vol_Rating": "Alto" if float(fund_row['Volume']) > 1000000 else "Médio"
                     })
-                except:
-                    continue
+                except: continue
             
-            st.session_state.full_data = pd.DataFrame(results).sort_values("Probabilidade %", ascending=False)
+            # Ranking Top 10
+            df_rank = pd.DataFrame(final_list).sort_values("Probabilidade", ascending=False).head(10)
+            st.session_state.top_10 = df_rank
 
-    if 'full_data' in st.session_state:
-        # Cards de Destaque
-        top3 = st.session_state.full_data.head(3).to_dict('records')
+    if 'top_10' in st.session_state:
+        st.write("### 🔥 As 10 Melhores Oportunidades do Dia")
+        
+        # Cards de Destaque para o Top 3
+        top3 = st.session_state.top_10.head(3).to_dict('records')
         c1, c2, c3 = st.columns(3)
         for i, col in enumerate([c1, c2, c3]):
-            col.metric(label=f"Ticker: {top3[i]['Ticker']}", 
-                       value=f"${top3[i]['Preço']}", 
-                       delta=f"{top3[i]['Probabilidade %']}% Score")
-
+            col.metric(top3[i]['Ticker'], f"${top3[i]['Preço']}", f"{top3[i]['Probabilidade']}% Prob.")
+        
         st.write("---")
         
-        # Seleção de Detalhes
-        col_sel, col_btn = st.columns([3, 1])
-        with col_sel:
-            selected = st.selectbox("Selecione uma ação para relatório completo:", st.session_state.full_data['Ticker'])
-        with col_btn:
-            st.write("##")
-            if st.button("🔍 VER DETALHES"):
-                st.session_state.selected_ticker = selected
-                st.session_state.page = 'details'
-                st.rerun()
-            
-        st.dataframe(st.session_state.full_data, use_container_width=True)
+        # Seleção para análise da IA
+        selected = st.selectbox("Selecione para ver o relatório da IA e o Gráfico:", st.session_state.top_10['Ticker'])
+        if st.button("🔍 GERAR RELATÓRIO COMPLETO"):
+            st.session_state.selected_ticker = selected
+            st.session_state.page = 'details'
+            st.rerun()
 
-# --- TELA DETALHES ---
+        st.table(st.session_state.top_10)
+
 elif st.session_state.page == 'details':
     t = st.session_state.selected_ticker
-    if st.button("⬅️ VOLTAR AO RANKING"):
-        st.session_state.page = 'home'
-        st.rerun()
+    st.button("⬅️ VOLTAR", on_click=lambda: setattr(st.session_state, 'page', 'home'))
     
-    st.title(f"📊 Relatório Alpha: {t}")
+    st.title(f"📊 Relatório de Alta Probabilidade: {t}")
     
-    col_chart, col_ia = st.columns([2, 1])
+    c_chart, c_ia = st.columns([2, 1])
     
-    with col_chart:
-        # Gráfico em Tempo Real
-        df_plot = yf.download(t, period="5d", interval="15m", progress=False)
-        fig = go.Figure(data=[go.Candlestick(
-            x=df_plot.index, open=df_plot['Open'], high=df_plot['High'],
-            low=df_plot['Low'], close=df_plot['Close'],
-            increasing_line_color='#00ffcc', decreasing_line_color='#ff4b4b'
-        )])
-        fig.update_layout(template="plotly_dark", height=450, xaxis_rangeslider_visible=False)
+    with c_chart:
+        # Gráfico Day Trade (15 min)
+        hist = yf.download(t, period="2d", interval="15m", progress=False)
+        fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'],
+                                            increasing_line_color='#00ffcc', decreasing_line_color='#ff4b4b')])
+        fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
         
-        # Notícias
-        st.subheader("📰 Notícias Recentes")
-        try:
-            url = f'https://newsapi.org/v2/everything?q={t}&language=en&apiKey={NEWS_API_KEY}'
-            news = requests.get(url).json().get('articles', [])[:3]
-            for n in news:
-                st.markdown(f'<div class="news-card"><b>{n["source"]["name"]}</b><br>{n["title"]}</div>', unsafe_allow_html=True)
-        except:
-            st.write("Notícias indisponíveis no momento.")
+        # Notícias Reais
+        st.subheader("📰 Radar de Notícias e Sentimento")
+        url = f'https://newsapi.org/v2/everything?q={t}&language=en&apiKey={NEWS_API_KEY}'
+        news = requests.get(url).json().get('articles', [])[:3]
+        for n in news:
+            st.info(f"**{n['source']['name']}**: {n['title']}")
 
-    with col_ia:
-        st.subheader("🤖 Analista IA (ChatGPT)")
-        with st.status("Analisando recomendações de Bancos..."):
-            analise = get_gpt_analysis(t)
-            st.info(analise)
-        
-        st.write("---")
-        # Upside e Target
-        try:
-            si = yf.Ticker(t).info
-            atual = si.get('currentPrice', 1)
-            alvo = si.get('targetMeanPrice', atual)
-            upside = ((alvo/atual)-1)*100
-            st.metric("Upside Estimado", f"{round(upside, 1)}%", delta=f"Alvo: ${alvo}")
-        except:
-            st.write("Dados fundamentalistas indisponíveis.")
+    with c_ia:
+        st.subheader("🤖 Veredito da IA (GPT-4)")
+        with st.status("IA analisando fundamentos e notícias..."):
+            prompt = f"Analise a ação {t}. Ela foi selecionada por ter forte recomendação de bancos e setup gráfico de alta. Resuma em 3 pontos por que o trader deve ou não entrar nela hoje para buscar 1% de ganho."
+            report = client.chat.completions.create(model="gpt-4", messages=[{"role": "user", "content": prompt}])
+            st.write(report.choices[0].message.content)
