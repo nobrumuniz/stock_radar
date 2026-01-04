@@ -9,16 +9,16 @@ from openai import OpenAI
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Alpha Scanner v4", page_icon="📈", layout="wide")
 
-# Tente carregar as chaves dos Secrets
+# Carregar chaves dos Secrets (Segurança)
 try:
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
     NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
     client = OpenAI(api_key=OPENAI_API_KEY)
-except:
-    st.error("⚠️ Configure suas chaves (API Keys) nos 'Secrets' do Streamlit Cloud.")
+except Exception:
+    st.error("⚠️ Erro: Configure as chaves 'OPENAI_API_KEY' e 'NEWS_API_KEY' nos Secrets do Streamlit.")
     st.stop()
 
-# --- CSS PERSONALIZADO (Cores corrigidas para legibilidade) ---
+# --- CSS PERSONALIZADO ---
 st.markdown("""
     <style>
     .main { background-color: #0b0e14; }
@@ -27,8 +27,10 @@ st.markdown("""
         border: 1px solid #00ffcc !important;
         border-radius: 10px; padding: 15px;
     }
-    label[data-testid="stMetricLabel"] p {
-        color: #00ffcc !important; font-size: 18px !important; font-weight: bold;
+    [data-testid="stMetricLabel"] { 
+        color: #00ffcc !important; 
+        font-weight: bold !important;
+        font-size: 20px !important;
     }
     div[data-testid="stMetricValue"] > div { color: #ffffff !important; }
     .news-card {
@@ -42,16 +44,19 @@ st.markdown("""
 
 def get_gpt_analysis(ticker):
     try:
+        prompt = f"Aja como um analista sênior. Resuma as 3 últimas recomendações de grandes bancos para a ação {ticker}. Inclua preço alvo e se é compra ou manutenção."
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": f"Resuma as 3 últimas recomendações de bancos para {ticker} (Preço Alvo e Classificação)."}],
-            max_tokens=150
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200
         )
         return response.choices[0].message.content
-    except: return "Analistas indisponíveis no momento."
+    except:
+        return "Resumo de analistas temporariamente indisponível."
 
-# --- LOGICA DE NAVEGAÇÃO ---
-if 'page' not in st.session_state: st.session_state.page = 'home'
+# --- NAVEGAÇÃO ---
+if 'page' not in st.session_state:
+    st.session_state.page = 'home'
 
 # --- TELA HOME ---
 if st.session_state.page == 'home':
@@ -60,8 +65,8 @@ if st.session_state.page == 'home':
     tickers = ['AAPL', 'TSLA', 'NVDA', 'AMD', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'SPY', 'QQQ', 'COIN', 'MSTR']
 
     if st.sidebar.button("🔄 ESCANEAR MERCADO"):
-        with st.spinner('Baixando dados em massa (Evitando bloqueio)...'):
-            # Baixa tudo de uma vez para não dar erro de Rate Limit
+        with st.spinner('Baixando dados e calculando probabilidades...'):
+            # Download em massa para evitar bloqueio do Yahoo Finance
             data_all = yf.download(tickers, period="1mo", interval="1h", group_by='ticker', progress=False)
             
             results = []
@@ -71,52 +76,62 @@ if st.session_state.page == 'home':
                     if df.empty: continue
                     
                     price = df['Close'].iloc[-1]
-                    # Indicadores
                     rsi = ta.rsi(df['Close'], length=14).iloc[-1]
                     
-                    # Score de probabilidade simples
+                    # Score de probabilidade
                     score = 50
-                    if rsi < 40: score += 20  # Sobrevendido
-                    if rsi > 70: score -= 10  # Sobrecomprado
-                    if df['Close'].iloc[-1] > df['Open'].iloc[-1]: score += 15 # Momentum
+                    if rsi < 40: score += 20
+                    elif rsi > 70: score -= 10
+                    if df['Close'].iloc[-1] > df['Open'].iloc[-1]: score += 15
                     
                     results.append({
-                        "Ticker": t, "Probabilidade %": f"{round(score, 1)}%", 
-                        "Preço": round(float(price), 2), "RSI": round(float(rsi), 1),
-                        "df": df # Guardar para o gráfico depois
+                        "Ticker": t, 
+                        "Probabilidade %": round(score, 1), 
+                        "Preço": round(float(price), 2), 
+                        "RSI": round(float(rsi), 1)
                     })
-                except: continue
+                except:
+                    continue
             
             st.session_state.full_data = pd.DataFrame(results).sort_values("Probabilidade %", ascending=False)
 
     if 'full_data' in st.session_state:
-        # Exibir Top 3
+        # Cards de Destaque
         top3 = st.session_state.full_data.head(3).to_dict('records')
         c1, c2, c3 = st.columns(3)
         for i, col in enumerate([c1, c2, c3]):
-            col.metric(label=top3[i]['Ticker'], value=f"${top3[i]['Preço']}", delta=top3[i]['Probabilidade %'])
+            col.metric(label=f"Ticker: {top3[i]['Ticker']}", 
+                       value=f"${top3[i]['Preço']}", 
+                       delta=f"{top3[i]['Probabilidade %']}% Score")
 
         st.write("---")
-        # Lista para detalhes
-        selected = st.selectbox("Selecione para análise detalhada:", st.session_state.full_data['Ticker'])
-        if st.button("🔍 ABRIR RELATÓRIO COMPLETO"):
-            st.session_state.selected_ticker = selected
-            st.session_state.page = 'details'
-            st.rerun()
+        
+        # Seleção de Detalhes
+        col_sel, col_btn = st.columns([3, 1])
+        with col_sel:
+            selected = st.selectbox("Selecione uma ação para relatório completo:", st.session_state.full_data['Ticker'])
+        with col_btn:
+            st.write("##")
+            if st.button("🔍 VER DETALHES"):
+                st.session_state.selected_ticker = selected
+                st.session_state.page = 'details'
+                st.rerun()
             
-        st.dataframe(st.session_state.full_data[["Ticker", "Probabilidade %", "Preço", "RSI"]], use_container_width=True)
+        st.dataframe(st.session_state.full_data, use_container_width=True)
 
 # --- TELA DETALHES ---
 elif st.session_state.page == 'details':
     t = st.session_state.selected_ticker
-    st.button("⬅️ VOLTAR", on_click=lambda: setattr(st.session_state, 'page', 'home'))
+    if st.button("⬅️ VOLTAR AO RANKING"):
+        st.session_state.page = 'home'
+        st.rerun()
     
     st.title(f"📊 Relatório Alpha: {t}")
     
     col_chart, col_ia = st.columns([2, 1])
     
     with col_chart:
-        # Gráfico Candlestick
+        # Gráfico em Tempo Real
         df_plot = yf.download(t, period="5d", interval="15m", progress=False)
         fig = go.Figure(data=[go.Candlestick(
             x=df_plot.index, open=df_plot['Open'], high=df_plot['High'],
@@ -133,18 +148,22 @@ elif st.session_state.page == 'details':
             news = requests.get(url).json().get('articles', [])[:3]
             for n in news:
                 st.markdown(f'<div class="news-card"><b>{n["source"]["name"]}</b><br>{n["title"]}</div>', unsafe_allow_html=True)
-        except: st.write("Notícias indisponíveis.")
+        except:
+            st.write("Notícias indisponíveis no momento.")
 
-    with col_right := col_ia:
-        st.subheader("🤖 IA Analista (GPT)")
-        with st.status("Lendo dados de Wall Street..."):
+    with col_ia:
+        st.subheader("🤖 Analista IA (ChatGPT)")
+        with st.status("Analisando recomendações de Bancos..."):
             analise = get_gpt_analysis(t)
-            st.write(analise)
+            st.info(analise)
         
         st.write("---")
-        # Upside Real
-        si = yf.Ticker(t).info
-        atual = si.get('currentPrice', 1)
-        alvo = si.get('targetMeanPrice', atual)
-        upside = ((alvo/atual)-1)*100
-        st.metric("Upside p/ Alvo", f"{round(upside, 1)}%", delta=f"Alvo: ${alvo}")
+        # Upside e Target
+        try:
+            si = yf.Ticker(t).info
+            atual = si.get('currentPrice', 1)
+            alvo = si.get('targetMeanPrice', atual)
+            upside = ((alvo/atual)-1)*100
+            st.metric("Upside Estimado", f"{round(upside, 1)}%", delta=f"Alvo: ${alvo}")
+        except:
+            st.write("Dados fundamentalistas indisponíveis.")
