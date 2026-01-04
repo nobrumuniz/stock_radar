@@ -5,127 +5,156 @@ import openai
 import json
 import requests
 import plotly.graph_objects as go
-from datetime import datetime
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Alpha IA Scanner v7", page_icon="🧠", layout="wide")
+st.set_page_config(page_title="Alpha Scanner AI v8", page_icon="🧪", layout="wide")
 
-# Inicialização OpenAI
+# Inicialização Robusta da OpenAI
 try:
     client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-    NEWS_API_KEY = st.secrets["NEWS_API_KEY"]
-except:
-    st.error("⚠️ Erro: Configure as chaves nos Secrets do Streamlit.")
+    NEWS_API_KEY = st.secrets.get("NEWS_API_KEY", "")
+except Exception as e:
+    st.error(f"❌ Erro Crítico de Configuração: {e}")
     st.stop()
 
-# --- CSS DE ALTA PERFORMANCE ---
+# --- CSS DE ALTA VISIBILIDADE ---
 st.markdown("""
     <style>
-    .main { background-color: #0b0e14; color: white; }
+    .main { background-color: #0b0e14; }
     div[data-testid="stMetric"] { background-color: #161b22; border: 1px solid #00ffcc; border-radius: 10px; }
-    [data-testid="stMetricLabel"] { color: #00ffcc !important; font-weight: bold !important; }
-    .stTable { background-color: #161b22; }
-    .status-box { padding: 20px; border-radius: 10px; border: 1px solid #4facfe; background-color: #1e2130; margin-bottom: 20px; }
+    [data-testid="stMetricLabel"] p { color: #00ffcc !important; font-weight: bold; }
+    .debug-box { padding: 10px; background-color: #262730; border-radius: 5px; font-family: monospace; font-size: 12px; color: #ff4b4b; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- FUNÇÕES DE DADOS ---
+# --- FUNÇÕES DE COLETA (DEBUGADAS) ---
 
-@st.cache_data(ttl=3600)
-def get_raw_market_data():
-    """Coleta dados brutos das 30 ações mais líquidas/importantes para a IA filtrar"""
-    tickers = ['AAPL', 'TSLA', 'NVDA', 'AMD', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'COIN', 'MSTR', 'AMD', 'AVGO', 'SMCI', 'TSM', 'PLTR', 'BABA', 'UBER', 'JPM', 'GS']
-    data = yf.download(tickers, period="5d", interval="1h", group_by='ticker', progress=False)
+@st.cache_data(ttl=600)
+def get_market_snapshot():
+    """Coleta dados fundamentais e técnicos reais para enviar à IA"""
+    # Foco em ações de alta volatilidade e recomendação de bancos (S&P 500 tech)
+    tickers = ['AAPL', 'TSLA', 'NVDA', 'AMD', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'COIN', 'MSTR', 'AMD', 'AVGO', 'SMCI', 'PLTR', 'BABA', 'JPM']
     
-    summary = []
-    for t in tickers:
-        try:
+    try:
+        # Download em lote (muito mais rápido)
+        data = yf.download(tickers, period="5d", interval="1h", group_by='ticker', progress=False)
+        
+        snapshot = []
+        for t in tickers:
             df = data[t].dropna()
-            price = df['Close'].iloc[-1]
-            change = ((price / df['Close'].iloc[0]) - 1) * 100
-            # Adicionando volume e volatilidade para a IA
-            vol = df['Volume'].iloc[-1]
-            summary.append({"ticker": t, "price": round(price,2), "5d_change": round(change,2), "volume": int(vol)})
-        except: continue
-    return summary
+            if df.empty: continue
+            
+            # Pegando recomendações de bancos (pode ser lento, então pegamos apenas das principais)
+            stock = yf.Ticker(t)
+            try:
+                target = stock.info.get('targetMeanPrice', df['Close'].iloc[-1] * 1.1)
+                recom = stock.info.get('recommendationKey', 'N/A')
+            except:
+                target, recom = 0, 'N/A'
 
-def ask_ai_to_rank(market_summary):
-    """O CÉREBRO: Envia dados para o GPT-4 e recebe o Ranking em JSON"""
+            snapshot.append({
+                "ticker": t,
+                "price": round(df['Close'].iloc[-1], 2),
+                "volatilidade_5d": f"{round(df['Close'].pct_change().std() * 100, 2)}%",
+                "target_bancos": target,
+                "recom_bancos": recom,
+                "volume_24h": int(df['Volume'].iloc[-1])
+            })
+        return snapshot
+    except Exception as e:
+        st.error(f"Erro no Yahoo Finance: {e}")
+        return []
+
+def ask_ai_expert(data_snapshot):
+    """Envia o snapshot para a IA com Fallback de Modelos"""
+    if not data_snapshot:
+        return {"error": "Nenhum dado de mercado disponível para análise."}
+
     prompt = f"""
-    Aja como um Quant Trader de um Hedge Fund. Analise estes dados brutos de mercado: {market_summary}.
-    Seu objetivo é encontrar as 10 melhores oportunidades de DAY TRADE para hoje (Alvo 1% de ganho).
-    Considere: Momentum, Volume e Consenso de mercado.
+    Aja como um Analista de Hedge Fund. Analise estes dados reais do mercado: {data_snapshot}.
+    Selecione as 10 melhores para DAY TRADE hoje (foco em alvos de 1% de ganho rápido).
     
-    RETORNE RIGOROSAMENTE APENAS UM JSON (sem texto antes ou depois) no formato:
+    Retorne APENAS um JSON no formato exato:
     {{
       "ranking": [
         {{
-          "ticker": "TSLA",
-          "probabilidade": 92,
-          "entrada": 245.50,
-          "motivo_tecnico": "Rompimento de canal de 15min com volume",
-          "motivo_fundament": "Upgrade do Goldman Sachs esta manhã",
-          "upside_estimado": "1.5%"
+          "ticker": "NOME",
+          "probabilidade": 95,
+          "entrada": 150.00,
+          "motivo_tecnico": "Explicação curta",
+          "motivo_fundament": "Explicação curta",
+          "upside": "1.2%"
         }}
       ]
     }}
     """
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4-turbo-preview",
-            messages=[{"role": "system", "content": "Você é um analista financeiro que só responde em JSON."},
-                      {"role": "user", "content": prompt}],
-            response_format={ "type": "json_object" }
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        return {"error": str(e)}
+    
+    # Lista de modelos para tentar (do melhor para o mais acessível)
+    models = ["gpt-4o", "gpt-4-turbo-preview", "gpt-4o-mini"]
+    
+    last_error = ""
+    for model in models:
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": "Você é um terminal financeiro JSON."},
+                          {"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                timeout=30
+            )
+            return json.loads(response.choices[0].message.content)
+        except Exception as e:
+            last_error = str(e)
+            continue # Tenta o próximo modelo
+            
+    return {"error": f"Falha em todos os modelos de IA. Último erro: {last_error}"}
 
 # --- INTERFACE ---
 
 if 'page' not in st.session_state: st.session_state.page = 'home'
 
 if st.session_state.page == 'home':
-    st.title("🧠 Alpha Scanner AI v7: Inteligência Pura")
-    
-    with st.sidebar:
-        st.header("Comandos")
-        run_scan = st.button("🚀 EXECUTAR ANÁLISE IA")
-        st.caption("Tempo estimado: 15-30 segundos")
+    st.title("🧪 Alpha Scanner v8 (Debug Mode)")
+    st.subheader("Análise Multi-Modelos: Bancos + Gráfico + IA")
 
-    if run_scan:
-        with st.status("🧠 IA Processando Mercado...", expanded=True) as status:
-            st.write("1. Coletando dados das 30 ações mais voláteis...")
-            raw_data = get_raw_market_data()
+    with st.sidebar:
+        if st.button("🚀 EXECUTAR SCANNER IA"):
+            st.session_state.running = True
+        if st.button("🧹 LIMPAR CACHE"):
+            st.cache_data.clear()
+            st.rerun()
+
+    if st.session_state.get('running'):
+        with st.status("🔍 Processando Dados...", expanded=True) as status:
+            st.write("1. Coletando dados fundamentais e técnicos...")
+            market_data = get_market_snapshot()
             
-            st.write("2. Enviando para o GPT-4 Analista (Hedge Fund Mode)...")
-            ai_response = ask_ai_to_rank(raw_data)
-            
-            if "ranking" in ai_response:
-                st.session_state.top_10 = ai_response["ranking"]
-                status.update(label="Análise Concluída!", state="complete")
+            if not market_data:
+                st.error("Falha ao coletar dados do Yahoo Finance. O serviço pode estar fora do ar.")
             else:
-                st.error("Erro na resposta da IA")
+                st.write(f"2. Analisando {len(market_data)} ativos com GPT-4o...")
+                ai_res = ask_ai_expert(market_data)
+                
+                if "ranking" in ai_res:
+                    st.session_state.top_10 = ai_res["ranking"]
+                    status.update(label="Análise Concluída com Sucesso!", state="complete")
+                else:
+                    st.markdown(f'<div class="debug-box">ERRO DA IA: {ai_res.get("error")}</div>', unsafe_allow_html=True)
 
     if 'top_10' in st.session_state:
-        # Cards de Destaque (Seguro contra IndexError)
-        st.write("### 🔥 Top Oportunidades Selecionadas pela IA")
-        num_items = len(st.session_state.top_10)
-        cols = st.columns(min(3, num_items))
-        
-        for i in range(min(3, num_items)):
-            item = st.session_state.top_10[i]
-            cols[i].metric(item['ticker'], f"${item['entrada']}", f"{item['probabilidade']}% Prob.")
-
         st.write("---")
+        t10 = st.session_state.top_10
+        cols = st.columns(min(3, len(t10)))
         
-        # Tabela Detalhada
-        df_display = pd.DataFrame(st.session_state.top_10)
-        st.subheader("📋 Ranking Estruturado (JSON Parsed)")
-        st.dataframe(df_display[['ticker', 'probabilidade', 'upside_estimado', 'motivo_tecnico', 'motivo_fundament']], use_container_width=True)
+        for i in range(min(3, len(t10))):
+            cols[i].metric(t10[i]['ticker'], f"${t10[i]['entrada']}", f"{t10[i]['probabilidade']}% Prob.")
 
-        selected = st.selectbox("Selecione para ver Gráfico e Notícias:", df_display['ticker'])
-        if st.button("🔍 VER PAINEL DE OPERAÇÃO"):
+        st.subheader("📋 Ranking Detalhado")
+        df = pd.DataFrame(t10)
+        st.dataframe(df[['ticker', 'probabilidade', 'upside', 'motivo_tecnico', 'motivo_fundament']], use_container_width=True)
+
+        selected = st.selectbox("Selecione para abrir o terminal:", df['ticker'])
+        if st.button("🔍 ABRIR TERMINAL DE TRADE"):
             st.session_state.selected_ticker = selected
             st.session_state.page = 'details'
             st.rerun()
@@ -134,41 +163,31 @@ elif st.session_state.page == 'details':
     t = st.session_state.selected_ticker
     st.button("⬅️ VOLTAR", on_click=lambda: setattr(st.session_state, 'page', 'home'))
     
-    # Encontrar dados da IA para este ticker
-    stock_detail = next((item for item in st.session_state.top_10 if item["ticker"] == t), None)
+    # Recupera info do JSON
+    info_ia = next((item for item in st.session_state.top_10 if item["ticker"] == t), {})
+
+    st.title(f"⚡ Terminal: {t}")
+    c1, c2 = st.columns([2, 1])
     
-    st.title(f"⚡ Terminal de Trade: {t}")
-    
-    col_l, col_r = st.columns([2, 1])
-    
-    with col_l:
-        # Gráfico Day Trade
-        hist = yf.download(t, period="3d", interval="15m", progress=False)
+    with c1:
+        hist = yf.download(t, period="2d", interval="15m", progress=False)
         fig = go.Figure(data=[go.Candlestick(x=hist.index, open=hist['Open'], high=hist['High'], low=hist['Low'], close=hist['Close'],
-                                            increasing_line_color='#00ffcc', decreasing_line_color='#ff4b4b')])
-        fig.update_layout(template="plotly_dark", height=500, xaxis_rangeslider_visible=False)
+                        increasing_line_color='#00ffcc', decreasing_line_color='#ff4b4b')])
+        fig.update_layout(template="plotly_dark", height=450, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
         
-        # Radar de Notícias
-        st.subheader("📰 Radar de Notícias em Tempo Real")
-        url = f'https://newsapi.org/v2/everything?q={t}&language=en&apiKey={NEWS_API_KEY}'
-        news = requests.get(url).json().get('articles', [])[:3]
-        for n in news:
-            st.markdown(f"""<div style='background:#161b22; padding:10px; border-radius:5px; margin-bottom:5px; border-left:4px solid #00ffcc;'>
-                <b>{n['source']['name']}</b>: {n['title']}</div>""", unsafe_allow_html=True)
+        # Notícias
+        st.subheader("📰 Notícias")
+        if NEWS_API_KEY:
+            try:
+                n_url = f'https://newsapi.org/v2/everything?q={t}&language=en&apiKey={NEWS_API_KEY}'
+                arts = requests.get(n_url).json().get('articles', [])[:3]
+                for a in arts:
+                    st.write(f"**{a['source']['name']}**: {a['title']}")
+            except: st.write("Erro nas notícias.")
 
-    with col_r:
-        st.markdown(f"""
-        <div class='status-box'>
-            <h2 style='color:#00ffcc;'>Veredito da IA</h2>
-            <p><b>Probabilidade:</b> {stock_detail['probabilidade']}%</p>
-            <p><b>Entrada Sugerida:</b> ${stock_detail['entrada']}</p>
-            <hr>
-            <p><b>Técnico:</b> {stock_detail['motivo_tecnico']}</p>
-            <p><b>Fundamental:</b> {stock_detail['motivo_fundament']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Botão de Refresh
-        if st.button("🔄 RE-ANALISAR ESTE ATIVO"):
-            st.rerun()
+    with c2:
+        st.success(f"**Probabilidade IA:** {info_ia.get('probabilidade')}%")
+        st.info(f"**Técnico:** {info_ia.get('motivo_tecnico')}")
+        st.warning(f"**Fundamental:** {info_ia.get('motivo_fundament')}")
+        st.metric("Upside Esperado", info_ia.get('upside'))
