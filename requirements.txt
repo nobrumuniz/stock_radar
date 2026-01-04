@@ -4,5 +4,4 @@ pandas
 pandas_ta
 plotly
 requests
-textblob
-google-generativeai
+openai
