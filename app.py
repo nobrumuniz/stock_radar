@@ -5,154 +5,147 @@ import pandas_ta as ta
 import plotly.graph_objects as go
 import requests
 from textblob import TextBlob
-from datetime import datetime, timedelta
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="AI Alpha Trader", page_icon="📈", layout="wide")
+st.set_page_config(page_title="AI Alpha Trader Pro", page_icon="📈", layout="wide")
 
-# --- ESTILIZAÇÃO CSS (INTERFACE LINDA) ---
+# --- ESTILIZAÇÃO CSS (CORREÇÃO DE CORES) ---
 st.markdown("""
     <style>
     .main { background-color: #0e1117; }
-    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #3e445e; }
-    .stDataFrame { border-radius: 10px; }
-    h1, h2, h3 { color: #00ffcc !important; font-family: 'Inter', sans-serif; }
+    [data-testid="stMetricValue"] { color: #00ffcc !important; font-size: 24px !important; }
+    [data-testid="stMetricLabel"] { color: #ffffff !important; font-weight: bold !important; }
+    [data-testid="stMetricDelta"] { color: #00ffcc !important; }
+    .stDataFrame { background-color: #161b22; border-radius: 10px; }
+    h1, h2, h3 { color: #00ffcc !important; }
     .stButton>button { 
         background: linear-gradient(90deg, #00f2fe 0%, #4facfe 100%); 
-        color: white; border: none; border-radius: 20px; padding: 10px 25px;
-        font-weight: bold; width: 100%; transition: 0.3s;
+        color: white; border: none; border-radius: 10px; font-weight: bold; width: 100%;
     }
-    .stButton>button:hover { transform: scale(1.02); box-shadow: 0px 4px 15px rgba(0, 242, 254, 0.4); }
-    [data-testid="stSidebar"] { background-color: #161b22; border-right: 1px solid #30363d; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- CONFIGURAÇÕES E APIs ---
-NEWS_API_KEY = "640760e6c18045338e5ea0c4f5354a2f"
-TICKERS = ['AAPL', 'TSLA', 'NVDA', 'AMD', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'SPY', 'QQQ', 'COIN']
+# --- INICIALIZAÇÃO DE ESTADO ---
+if 'page' not in st.session_state:
+    st.session_state.page = 'home'
+if 'selected_stock' not in st.session_state:
+    st.session_state.selected_stock = None
 
-# --- FUNÇÕES DE ANÁLISE ---
+# --- CONFIGURAÇÕES ---
+NEWS_API_KEY = "640760e6c18045338e5ea0c4f5354a2f"
+TICKERS = ['AAPL', 'TSLA', 'NVDA', 'AMD', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NFLX', 'SPY', 'QQQ', 'COIN', 'BA', 'MSTR']
+
+# --- FUNÇÕES ---
 
 def get_sentiment(ticker):
-    """Analisa o sentimento das notícias via NewsAPI"""
     url = f'https://newsapi.org/v2/everything?q={ticker}&language=en&sortBy=publishedAt&apiKey={NEWS_API_KEY}'
     try:
         response = requests.get(url).json()
-        articles = response.get('articles', [])[:5] # Pega as 5 mais recentes
-        if not articles: return 0
-        
-        sentiments = []
-        for art in articles:
-            analysis = TextBlob(art['title'])
-            sentiments.append(analysis.sentiment.polarity)
+        articles = response.get('articles', [])[:5]
+        if not articles: return 0.1
+        sentiments = [TextBlob(art['title']).sentiment.polarity for art in articles]
         return sum(sentiments) / len(sentiments)
-    except:
-        return 0
+    except: return 0
 
-def analyze_tech(symbol):
-    """Análise Multi-Timeframe e Indicadores"""
+def fetch_data(symbol, interval="15m", period="5d"):
+    df = yf.download(symbol, period=period, interval=interval, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+def analyze_stock(symbol):
     try:
-        # Puxando dados
-        df_daily = yf.download(symbol, period="1y", interval="1d", progress=False)
-        df_15m = yf.download(symbol, period="5d", interval="15m", progress=False)
+        df_daily = fetch_data(symbol, "1d", "1y")
+        df_15m = fetch_data(symbol, "15m", "5d")
         
-        # Tendência Diária (EMA 200)
+        # Técnica
         df_daily['EMA200'] = ta.ema(df_daily['Close'], length=200)
         trend_up = df_daily['Close'].iloc[-1] > df_daily['EMA200'].iloc[-1]
-        
-        # Indicadores 15min (Day Trade)
         df_15m['RSI'] = ta.rsi(df_15m['Close'], length=14)
         df_15m['EMA9'] = ta.ema(df_15m['Close'], length=9)
         df_15m['EMA21'] = ta.ema(df_15m['Close'], length=21)
         
-        last_rsi = df_15m['RSI'].iloc[-1]
-        crossover = df_15m['EMA9'].iloc[-1] > df_15m['EMA21'].iloc[-1]
-        
-        # Score Técnico (0-70)
         score = 0
-        if trend_up: score += 25
-        if crossover: score += 25
-        if 40 < last_rsi < 70: score += 20
+        if trend_up: score += 40
+        if df_15m['EMA9'].iloc[-1] > df_15m['EMA21'].iloc[-1]: score += 30
+        rsi = df_15m['RSI'].iloc[-1]
+        if 40 < rsi < 70: score += 30
         
-        return score, df_15m, last_rsi
-    except:
-        return 0, None, 50
+        sentiment = get_sentiment(symbol)
+        final_score = (score * 0.7) + ((sentiment + 1) * 15)
+        
+        return round(final_score, 1), rsi, "Positivo" if sentiment > 0 else "Neutro/Neg"
+    except: return 0, 50, "N/A"
 
-# --- DASHBOARD UI ---
+# --- RENDERIZAÇÃO ---
 
-st.sidebar.title("⚡ Alpha Scanner v2")
-st.sidebar.write("Mercado Americano (Real-time)")
-
-if st.sidebar.button("ESCANEAR OPORTUNIDADES"):
-    results = []
-    progress_bar = st.progress(0)
+if st.session_state.page == 'home':
+    st.title("🚀 Alpha Scanner v2 - Mercado Americano")
     
-    for i, t in enumerate(TICKERS):
-        # 1. Análise Técnica
-        score_tech, df_hist, rsi = analyze_tech(t)
-        
-        # 2. Análise de Sentimento (Notícias)
-        sentiment = get_sentiment(t)
-        score_news = (sentiment + 1) * 15 # Normaliza de -1/1 para 0-30
-        
-        # 3. Score Final (0-100)
-        total_score = score_tech + score_news
-        
-        results.append({
-            "Ticker": t,
-            "Probabilidade": round(total_score, 1),
-            "RSI": round(rsi, 2),
-            "Sentimento": "Positivo" if sentiment > 0 else "Negativo",
-            "Preço": round(yf.Ticker(t).fast_info['last_price'], 2),
-            "df": df_hist
-        })
-        progress_bar.progress((i + 1) / len(TICKERS))
+    if st.sidebar.button("🔄 ATUALIZAR RANKING"):
+        with st.spinner('Analisando mercado...'):
+            results = []
+            for t in TICKERS:
+                score, rsi, sent = analyze_stock(t)
+                price = yf.Ticker(t).fast_info['last_price']
+                results.append({"Ticker": t, "Probabilidade %": score, "Sentimento": sent, "RSI": round(rsi,1), "Preço": round(price,2)})
+            st.session_state.results = pd.DataFrame(results).sort_values("Probabilidade %", ascending=False)
 
-    # Ranking
-    df_results = pd.DataFrame(results).sort_values(by="Probabilidade", ascending=False)
+    if 'results' in st.session_state:
+        # Top Cards
+        top = st.session_state.results.head(3).to_dict('records')
+        cols = st.columns(3)
+        for i, c in enumerate(cols):
+            with c:
+                st.metric(label=f"#{i+1} {top[i]['Ticker']}", value=f"${top[i]['Preço']}", delta=f"{top[i]['Probabilidade %']}% Prob.")
 
-    # Destaque: Top 3 Cards
-    st.subheader("🏆 Melhores Entradas para Agora")
-    c1, c2, c3 = st.columns(3)
-    top_stocks = df_results.head(3).to_dict('records')
+        st.write("---")
+        st.subheader("📋 Ranking de Entradas (Clique no Ticker para Detalhes)")
+        
+        # Seleção de Ação para Detalhes
+        selected = st.selectbox("Selecione uma ação para análise profunda:", st.session_state.results['Ticker'])
+        if st.button("🔍 VER ANÁLISE DETALHADA"):
+            st.session_state.selected_stock = selected
+            st.session_state.page = 'details'
+            st.rerun()
+
+        st.dataframe(st.session_state.results, use_container_width=True)
+    else:
+        st.info("Clique no botão à esquerda para iniciar.")
+
+elif st.session_state.page == 'details':
+    ticker = st.session_state.selected_stock
+    st.button("⬅️ VOLTAR AO RANKING", on_click=lambda: setattr(st.session_state, 'page', 'home'))
     
-    for i, col in enumerate([c1, c2, c3]):
-        with col:
-            st.metric(label=f"#{i+1} {top_stocks[i]['Ticker']}", 
-                      value=f"${top_stocks[i]['Preço']}", 
-                      delta=f"{top_stocks[i]['Probabilidade']}% Score")
+    st.title(f"📊 Análise Detalhada: {ticker}")
+    
+    # Controles de Gráfico
+    c1, c2 = st.columns([1, 3])
+    with c1:
+        st.subheader("Configurações")
+        tf = st.selectbox("Timeframe", ["5m", "15m", "30m", "60m", "1d"], index=1)
+        periodo = "1d" if tf in ["5m", "15m"] else "1mo"
+        if st.button("🔄 Refresh Dados"): st.rerun()
+        
+    # Busca dados para o gráfico
+    df_chart = fetch_data(ticker, tf, periodo)
+    df_chart['EMA9'] = ta.ema(df_chart['Close'], length=9)
+    df_chart['EMA21'] = ta.ema(df_chart['Close'], length=21)
 
-    # Tabela Geral
+    with c2:
+        fig = go.Figure(data=[
+            go.Candlestick(x=df_chart.index, open=df_chart['Open'], high=df_chart['High'], low=df_chart['Low'], close=df_chart['Close'], 
+                           name="Price", increasing_line_color='#00ffcc', decreasing_line_color='#ff4b4b'),
+            go.Scatter(x=df_chart.index, y=df_chart['EMA9'], line=dict(color='yellow', width=1), name='EMA 9'),
+            go.Scatter(x=df_chart.index, y=df_chart['EMA21'], line=dict(color='magenta', width=1), name='EMA 21')
+        ])
+        fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Info Fundamentalista Básica
     st.write("---")
-    st.subheader("📋 Ranking Completo de Probabilidade")
-    st.table(df_results[['Ticker', 'Probabilidade', 'Sentimento', 'RSI', 'Preço']])
-
-    # Gráfico do Top #1
-    st.write("---")
-    st.subheader(f"🔍 Análise Detalhada: {top_stocks[0]['Ticker']} (15 min)")
-    fig = go.Figure(data=[go.Candlestick(
-        x=top_stocks[0]['df'].index,
-        open=top_stocks[0]['df']['Open'],
-        high=top_stocks[0]['df']['High'],
-        low=top_stocks[0]['df']['Low'],
-        close=top_stocks[0]['df']['Close'],
-        name="Candles"
-    )])
-    fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=500)
-    st.plotly_chart(fig, use_container_width=True)
-
-else:
-    # Estado Inicial
-    st.info("👋 Bem-vindo ao AI Alpha Trader. Clique no botão lateral para analisar o mercado americano em tempo real.")
-    
-    # Exibir algumas notícias globais enquanto não carrega
-    st.subheader("🌐 Radar de Notícias Global (Market Sentiment)")
-    try:
-        url_global = f'https://newsapi.org/v2/top-headlines?category=business&language=en&apiKey={NEWS_API_KEY}'
-        news = requests.get(url_global).json()['articles'][:4]
-        n1, n2 = st.columns(2)
-        for i, article in enumerate(news):
-            with (n1 if i % 2 == 0 else n2):
-                st.warning(f"**{article['source']['name']}**: {article['title']}")
-    except:
-        st.write("Conectando ao radar de notícias...")
+    info = yf.Ticker(ticker).info
+    f1, f2, f3 = st.columns(3)
+    f1.write(f"**Volume Médio:** {info.get('averageVolume', 'N/A')}")
+    f2.write(f"**Target Price (Analistas):** ${info.get('targetMeanPrice', 'N/A')}")
+    f3.write(f"**Setor:** {info.get('sector', 'N/A')}")
